@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebGIS Tìm Đường Đi - Đại học Nha Trang</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body, html { margin:0; padding:0; height:100%; font-family:Arial,sans-serif; overflow:hidden; }
+  #map { width:100%; height:100vh; background:#000; }
+  .panel { position:absolute; top:15px; right:15px; z-index:1000; background:#fff; padding:14px;
+           border-radius:10px; box-shadow:0 4px 15px rgba(0,0,0,.3); width:320px; max-height:90vh; overflow:auto; transition: all 0.25s ease; }
+  .panel-header { display:flex; justify-content:space-between; align-items:center; }
+  h3 { margin:0; color:#0066cc; font-size:16px; }
+  .toggle-btn { width:auto; padding:3px 8px; font-size:11px; margin:0; background:#f0f2f5; color:#333; border:1px solid #ccc; border-radius:4px; cursor:pointer; }
+  .toggle-btn:hover { background:#e4e6eb; }
+  .form-group { margin-bottom:9px; }
+  label { display:block; font-weight:bold; font-size:12px; margin-bottom:4px; }
+  select, button { width:100%; padding:7px; border-radius:5px; border:1px solid #ccc; box-sizing:border-box; }
+  button { background:#0066cc; color:#fff; border:none; font-weight:bold; cursor:pointer; margin-top:5px; }
+  button:hover { background:#004999; }
+  button.sec { background:#6c757d; }
+  #result { font-size:13px; margin-top:8px; font-weight:bold; color:#198754; line-height:1.4; }
+  #result.err { color:#dc3545; }
+
+  /* Giao diện tinh gọn trên màn hình điện thoại (<= 600px) */
+  @media (max-width: 600px) {
+    .panel {
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      width: auto;
+      padding: 8px 12px;
+      border-radius: 8px;
+      max-height: 75vh;
+    }
+    h3 { font-size: 14px; }
+    .form-group { margin-bottom: 5px; }
+    label { font-size: 11px; margin-bottom: 2px; }
+    select, button { padding: 5px 6px; font-size: 12px; border-radius: 4px; }
+    button { margin-top: 4px; }
+    #btnLocate { font-size: 11px !important; padding: 4px !important; margin-top: 3px !important; }
+    #result { font-size: 12px; margin-top: 5px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="panel">
+  <div class="panel-header">
+    <h3>WebGIS NTU - Tìm Đường</h3>
+    <button type="button" id="btnTogglePanel" class="toggle-btn" title="Thu gọn / Mở rộng">▲ Thu gọn</button>
+  </div>
+  <div id="panelBody" style="margin-top: 8px;">
+    <div class="form-group">
+      <label>Điểm xuất phát:</label>
+      <select id="startPoint"><option value="">-- Chọn địa điểm đi --</option></select>
+      <button type="button" id="btnLocate" style="background:#198754; font-size:12px; padding:6px; margin-top:6px;">
+        Vị trí hiện tại của tôi
+      </button>
+    </div>
+    <div class="form-group">
+      <label>Điểm đến:</label>
+      <select id="endPoint"><option value="">-- Chọn địa điểm đến --</option></select>
+    </div>
+    <button id="btnFind">Tìm đường ngắn nhất</button>
+    <button id="btnClear" class="sec">Xóa kết quả</button>
+    <div id="result"></div>
+  </div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ====================== 1. BẢN ĐỒ ====================== */
+// Khung giới hạn chỉ cho di chuyển trong khuôn viên trường NTU
+const campusBounds = L.latLngBounds(
+  [12.2645, 109.1965], // Góc Tây Nam
+  [12.2725, 109.2065]  // Góc Đông Bắc
+);
+
+const map = L.map('map', {
+  center: [12.2685, 109.2018],
+  zoom: 17,
+  minZoom: 16,                 // Giới hạn zoom nhỏ, không cho thu nhỏ ra ngoài trường
+  maxZoom: 21,
+  maxBounds: campusBounds,     // Khóa phạm vi di chuyển trong trường NTU
+  maxBoundsViscosity: 1.0      // Độ cứng tuyệt đối, không cho trôi chuột ra ngoài
+});
+
+// Bản đồ nền Google Maps (đường phố)
+const googleStreets = L.tileLayer('https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+  maxZoom: 21,
+  subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+  attribution: 'NTU WebGIS Team'
+}).addTo(map);
+
+// Bản đồ nền Google Maps (vệ tinh / hybrid)
+const googleHybrid = L.tileLayer('https://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+  maxZoom: 21,
+  subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+  attribution: 'NTU WebGIS Team'
+});
+
+L.control.layers({
+  "Google Bản đồ": googleStreets,
+  "Google Vệ tinh": googleHybrid
+}, null, { position: 'bottomleft' }).addTo(map);
+
+// Tạo pane riêng cho mặt nạ đen, nằm ngay trên bản đồ nền (zIndex 250) nhưng dưới các đối tượng NTU
+map.createPane('maskPane');
+map.getPane('maskPane').style.zIndex = 250;
+
+// Mặt nạ đen che phủ toàn bộ khu vực bên ngoài trường NTU
+const blackMaskCoords = [
+  // 1. Vành ngoài che phủ toàn bộ thế giới
+  [
+    [-90, -180],
+    [-90, 180],
+    [90, 180],
+    [90, -180]
+  ],
+  // 2. Vành trong khoét lỗ khuôn viên trường NTU (sáng rõ bản đồ)
+  [
+    [12.2725, 109.1965],
+    [12.2645, 109.1965],
+    [12.2645, 109.2065],
+    [12.2725, 109.2065]
+  ]
+];
+
+L.polygon(blackMaskCoords, {
+  pane: 'maskPane',
+  color: '#000000',
+  fillColor: '#000000',
+  fillOpacity: 1.0,      // Đen kịt 100%
+  stroke: false,
+  interactive: false      // Chuột click xuyên qua lớp đen
+}).addTo(map);
+
+const campusGroup = L.featureGroup().addTo(map);
+const routeLayer  = L.featureGroup().addTo(map);
+const userLocationLayer = L.featureGroup().addTo(map);
+let myCurrentLocation = null; // Tọa độ người dùng [lng, lat]
+
+/* ====================== 2. HÀM TIỆN ÍCH ====================== */
+// Lấy tên từ nhiều kiểu tên cột khác nhau (không phân biệt hoa thường)
+function getName(props, fallback) {
+  if (props) {
+    for (const k of Object.keys(props)) {
+      if (['name','ten','ten_toa_nha','tentoanha','ten_duong','ten_tienich'].includes(k.toLowerCase()) && props[k]) return String(props[k]);
+    }
+  }
+  return fallback;
+}
+
+// Khoảng cách Haversine (mét) giữa 2 điểm [lng,lat]
+function haversine(a, b) {
+  const R = 6371000, rad = Math.PI/180;
+  const dLat = (b[1]-a[1])*rad, dLng = (b[0]-a[0])*rad;
+  const h = Math.sin(dLat/2)**2 + Math.cos(a[1]*rad)*Math.cos(b[1]*rad)*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+
+// Hình chiếu điểm p lên đoạn a-b (xấp xỉ phẳng cục bộ, đủ chính xác trong khuôn viên trường)
+function projectOnSegment(p, a, b) {
+  const kx = Math.cos(p[1]*Math.PI/180);
+  const ax=a[0]*kx, ay=a[1], bx=b[0]*kx, by=b[1], px=p[0]*kx, py=p[1];
+  const dx=bx-ax, dy=by-ay, len2=dx*dx+dy*dy;
+  let t = len2===0 ? 0 : ((px-ax)*dx+(py-ay)*dy)/len2;
+  t = Math.max(0, Math.min(1, t));
+  return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t];
+}
+
+// Min-heap cho Dijkstra
+class MinHeap {
+  constructor(){ this.h=[]; }
+  push(item){ const h=this.h; h.push(item); let i=h.length-1;
+    while(i>0){ const p=(i-1)>>1; if(h[p][0]<=h[i][0]) break; [h[p],h[i]]=[h[i],h[p]]; i=p; } }
+  pop(){ const h=this.h; if(!h.length) return null; const top=h[0], last=h.pop();
+    if(h.length){ h[0]=last; let i=0;
+      for(;;){ let l=2*i+1, r=l+1, m=i;
+        if(l<h.length && h[l][0]<h[m][0]) m=l;
+        if(r<h.length && h[r][0]<h[m][0]) m=r;
+        if(m===i) break; [h[m],h[i]]=[h[i],h[m]]; i=m; } }
+    return top; }
+  get size(){ return this.h.length; }
+}
+
+/* ====================== 3. ĐỒ THỊ ĐƯỜNG ĐI ====================== */
+const nodeCoord = new Map();   // key -> [lng,lat]
+const adj       = new Map();   // key -> Map(key -> {w})
+const segments  = [];          // {a,b} (key) để snap điểm vào đường
+const key = c => c[0].toFixed(7)+','+c[1].toFixed(7);
+
+function addNode(c){ const k=key(c); if(!nodeCoord.has(k)){ nodeCoord.set(k,c); adj.set(k,new Map()); } return k; }
+function addEdge(ka,kb,w){ if(ka===kb) return; adj.get(ka).set(kb,w); adj.get(kb).set(ka,w); }
+
+function addLine(coords){
+  for(let i=0;i<coords.length-1;i++){
+    const ka=addNode(coords[i]), kb=addNode(coords[i+1]);
+    addEdge(ka,kb,haversine(coords[i],coords[i+1]));
+    segments.push({a:ka,b:kb});
+  }
+}
+function buildGraph(geojson){
+  for(const f of geojson.features){
+    const g=f.geometry; if(!g) continue;
+    if(g.type==='LineString') addLine(g.coordinates);
+    else if(g.type==='MultiLineString') g.coordinates.forEach(addLine);
+  }
+}
+
+// Số thành phần liên thông - nếu > 1 nghĩa là đường bị đứt (chưa snap trong QGIS)
+function countComponents(){
+  const seen=new Set(); let n=0;
+  for(const s of adj.keys()){
+    if(seen.has(s)) continue; n++;
+    const st=[s]; seen.add(s);
+    while(st.length){ const u=st.pop(); for(const v of adj.get(u).keys()) if(!seen.has(v)){ seen.add(v); st.push(v);} }
+  }
+  return n;
+}
+
+// Gán nhãn thành phần liên thông cho mọi nút
+function labelComponents(){
+  const comp=new Map(), size=[];
+  for(const s of adj.keys()){
+    if(comp.has(s)) continue;
+    const id=size.length; let cnt=0; const st=[s]; comp.set(s,id);
+    while(st.length){ const u=st.pop(); cnt++;
+      for(const v of adj.get(u).keys()) if(!comp.has(v)){ comp.set(v,id); st.push(v); } }
+    size.push(cnt);
+  }
+  return {comp,size};
+}
+
+// Nối các chỗ hở rất nhỏ (<= tolM mét) giữa các mảnh đường rời nhau.
+// Dữ liệu OSM/QGIS hay có đầu đường chạm gần (nhưng không chung đỉnh với) giữa một đoạn đường khác.
+function bridgeGaps(tolM){
+  let joined=0;
+  for(;;){
+    const {comp}=labelComponents();
+    let best=null;
+    for(const [n,cn] of comp){
+      const p=nodeCoord.get(n);
+      for(const s of segments){
+        if(comp.get(s.a)===cn) continue;
+        const a=nodeCoord.get(s.a), b=nodeCoord.get(s.b), pad=0.0001;   // lọc nhanh theo khung bao (~11 m)
+        if(p[0]<Math.min(a[0],b[0])-pad||p[0]>Math.max(a[0],b[0])+pad||
+           p[1]<Math.min(a[1],b[1])-pad||p[1]>Math.max(a[1],b[1])+pad) continue;
+        const q=projectOnSegment(p,a,b), d=haversine(p,q);
+        if(d<=tolM&&(!best||d<best.d)) best={d,n,q,s};
+      }
+    }
+    if(!best) return joined;
+    const {d,n,q,s}=best, a=nodeCoord.get(s.a), b=nodeCoord.get(s.b);
+    let target;
+    if(haversine(q,a)<0.05) target=s.a;
+    else if(haversine(q,b)<0.05) target=s.b;
+    else {   // chia đôi đoạn đường tại điểm chạm
+      target=addNode(q);
+      adj.get(s.a).delete(s.b); adj.get(s.b).delete(s.a);
+      addEdge(s.a,target,haversine(a,q)); addEdge(target,s.b,haversine(q,b));
+      segments.push({a:target,b:s.b}); s.b=target;
+    }
+    addEdge(n,target,d); segments.push({a:n,b:target}); joined++;
+  }
+}
+
+// Chỉ giữ mảnh liên thông lớn nhất làm mạng chính; các điểm sẽ chỉ được "snap" vào mạng này
+let mainSegments=[];
+function keepMainComponent(){
+  const {comp,size}=labelComponents();
+  let main=0; size.forEach((c,i)=>{ if(c>size[main]) main=i; });
+  mainSegments=segments.filter(s=>comp.get(s.a)===main);
+  return {total:size.length, mainNodes:size[main]};
+}
+
+// Tìm điểm gần nhất trên mạng đường chính cho 1 vị trí
+function snap(p){
+  let best=null;
+  for(const s of mainSegments){
+    const q=projectOnSegment(p,nodeCoord.get(s.a),nodeCoord.get(s.b));
+    const d=haversine(p,q);
+    if(!best||d<best.d) best={d,q,seg:s};
+  }
+  return best;
+}
+
+// Nối các ngã ba bị hở nhỏ (đầu đường chưa chạm vào đường khác, tolM mét)
+function connectNearJunctions(tolM){
+  let joined=0;
+  for(const [n, neighbors] of adj){
+    if(neighbors.size > 2) continue;
+    const p = nodeCoord.get(n);
+    let best = null;
+    for(const s of segments){
+      if(s.a === n || s.b === n) continue;
+      if(adj.get(n).has(s.a) || adj.get(n).has(s.b)) continue;
+      const a = nodeCoord.get(s.a), b = nodeCoord.get(s.b), pad = 0.0001;
+      if(p[0]<Math.min(a[0],b[0])-pad||p[0]>Math.max(a[0],b[0])+pad||
+         p[1]<Math.min(a[1],b[1])-pad||p[1]>Math.max(a[1],b[1])+pad) continue;
+      const q = projectOnSegment(p, a, b), d = haversine(p, q);
+      if(d <= tolM && (!best || d < best.d)) best = { d, q, s };
+    }
+    if(best && best.d <= tolM){
+      const {d, q, s} = best, a = nodeCoord.get(s.a), b = nodeCoord.get(s.b);
+      let target;
+      if(haversine(q, a) < 0.1) target = s.a;
+      else if(haversine(q, b) < 0.1) target = s.b;
+      else {
+        target = addNode(q);
+        adj.get(s.a).delete(s.b); adj.get(s.b).delete(s.a);
+        addEdge(s.a, target, haversine(a, q)); addEdge(target, s.b, haversine(q, b));
+        segments.push({a: target, b: s.b}); s.b = target;
+      }
+      addEdge(n, target, d); segments.push({a: n, b: target}); joined++;
+    }
+  }
+  return joined;
+}
+
+// Kiểm tra điểm nằm trong đa giác (Ray-casting)
+function pointInPolygon(pt, ring){
+  let inside = false;
+  for(let i=0, j=ring.length-1; i<ring.length; j=i++){
+    const xi=ring[i][0], yi=ring[i][1], xj=ring[j][0], yj=ring[j][1];
+    const intersect = ((yi > pt[1]) !== (yj > pt[1])) &&
+      (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi);
+    if(intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// Khoảng cách ngắn nhất từ 1 điểm đến đa giác (m)
+function distToPolygon(pt, ring){
+  if(pointInPolygon(pt, ring)) return 0;
+  let minD = Infinity;
+  for(let i=0; i<ring.length-1; i++){
+    const q = projectOnSegment(pt, ring[i], ring[i+1]);
+    const d = haversine(pt, q);
+    if(d < minD) minD = d;
+  }
+  return minD;
+}
+
+// Lấy danh sách điểm tiếp cận với ưu tiên tuyệt đối cho các đường CHẠM DÍNH LIỀN (<= 1.0m)
+function getCandidateSnaps(place){
+  const touchingCandidates = [];
+  const nearbyCandidates = [];
+  const seenKeys = new Set();
+  const mainNodes = new Set();
+  mainSegments.forEach(s => { mainNodes.add(s.a); mainNodes.add(s.b); });
+
+  if(place && place.ring && place.ring.length){
+    for(const k of mainNodes){
+      const p = nodeCoord.get(k);
+      if(p[0] < place.minX - 0.00015 || p[0] > place.maxX + 0.00015 ||
+         p[1] < place.minY - 0.00015 || p[1] > place.maxY + 0.00015) continue;
+      const d = distToPolygon(p, place.ring);
+      if(d <= 5.0){
+        const s = snap(p);
+        if(!s) continue;
+        const actualD = distToPolygon(s.q, place.ring);
+        if(actualD > 5.0) continue; // Snap point phải thực sự nằm gần tòa nhà
+        const key = s.q[0].toFixed(5)+','+s.q[1].toFixed(5);
+        if(!seenKeys.has(key)){
+          seenKeys.add(key);
+          s.distToBuilding = actualD;
+          if(actualD <= 2.0){ // Thực sự chạm dính liền vào tòa nhà (khoảng cách <= 2m hoặc nằm trong)
+            touchingCandidates.push(s);
+          } else {
+            nearbyCandidates.push(s);
+          }
+        }
+      }
+    }
+  }
+  // BẮT BUỘC: Nếu tòa nhà ĐÃ CÓ đường chạm vào:
+  // Ưu tiên cao nhất các đường chạm sát sạt (khoảng cách cực nhỏ <= 0.3m, d = 0m)
+  if(touchingCandidates.length){
+    const minD = Math.min(...touchingCandidates.map(c => c.distToBuilding));
+    if(minD <= 0.3){
+      return touchingCandidates.filter(c => c.distToBuilding <= Math.max(minD + 0.2, 0.4));
+    }
+    return touchingCandidates;
+  }
+  if(nearbyCandidates.length){
+    return nearbyCandidates;
+  }
+  if(place && place.center){
+    return [snap(place.center)];
+  }
+  return [];
+}
+
+// Chạy Dijkstra giữa 2 điểm cụ thể trên mạng đường
+function dijkstraBetween(sS, sE){
+  if(!sS || !sE) return null;
+  const S='__S__', E='__E__';
+  const extra=new Map();
+  const coordOf=k=>k===S?sS.q:k===E?sE.q:nodeCoord.get(k);
+  const link=(v,k,w)=>{ if(!extra.has(v)) extra.set(v,[]); extra.get(v).push([k,w]); if(!extra.has(k)) extra.set(k,[]); extra.get(k).push([v,w]); };
+  for(const [v,s] of [[S,sS],[E,sE]]){
+    link(v,s.seg.a,haversine(s.q,nodeCoord.get(s.seg.a)));
+    link(v,s.seg.b,haversine(s.q,nodeCoord.get(s.seg.b)));
+  }
+  if(sS.seg===sE.seg || (sS.seg.a===sE.seg.a&&sS.seg.b===sE.seg.b)) link(S,E,haversine(sS.q,sE.q));
+
+  const neighbors=function*(u){
+    if(adj.has(u)) for(const [v,w] of adj.get(u)) yield [v,w];
+    if(extra.has(u)) for(const x of extra.get(u)) yield x;
+  };
+  const dist=new Map([[S,0]]), prev=new Map(), heap=new MinHeap(); heap.push([0,S]);
+  while(heap.size){
+    const [d,u]=heap.pop();
+    if(d>(dist.get(u)??Infinity)) continue;
+    if(u===E) break;
+    for(const [v,w] of neighbors(u)){
+      const nd=d+w;
+      if(nd<(dist.get(v)??Infinity)){ dist.set(v,nd); prev.set(v,u); heap.push([nd,v]); }
+    }
+  }
+  if(!dist.has(E)) return null;
+  const path=[]; for(let u=E;u!==undefined;u=prev.get(u)) path.push(coordOf(u));
+  path.reverse();
+  return {length:dist.get(E), path, sS, sE};
+}
+
+// Tìm đường thông minh: tự động chọn lối vào nào cho TỔNG QUÃNG ĐƯỜNG NGẮN NHẤT
+function shortestPath(placeStart, placeEnd){
+  const starts = getCandidateSnaps(placeStart);
+  const ends   = getCandidateSnaps(placeEnd);
+  let best = null;
+  for(const sS of starts){
+    for(const sE of ends){
+      const r = dijkstraBetween(sS, sE);
+      if(r && (!best || r.length < best.length)){
+        best = r;
+      }
+    }
+  }
+  return best;
+}
+
+/* ====================== 4. NẠP DỮ LIỆU ====================== */
+const places = [];  // {name, center:[lng,lat], ring:[[lng,lat],...], minX, maxX, minY, maxY}
+const $result=document.getElementById('result');
+
+// Thư mục chứa dữ liệu geojson, tính từ vị trí Index.html (Web/ -> ../duoi_Geojson/)
+const DATA_DIR = '../duoi_Geojson/';
+async function loadJSON(name){
+  const url = DATA_DIR + name;
+  const r=await fetch(url);
+  if(!r.ok) throw new Error(url+' -> HTTP '+r.status);
+  return r.json();
+}
+function addPlaces(layer, group){
+  const items = [];
+  layer.eachLayer(l=>{
+    const name=getName(l.feature.properties, null); if(!name) return;
+    const c=l.getBounds? l.getBounds().getCenter() : l.getLatLng();
+    let ring = null, minX=180, maxX=-180, minY=90, maxY=-90;
+    if(l.getLatLngs){
+      const pts = [];
+      function extract(arr){
+        if(Array.isArray(arr)) arr.forEach(extract);
+        else if(arr && typeof arr.lat === 'number'){
+          pts.push([arr.lng, arr.lat]);
+          if(arr.lng < minX) minX = arr.lng;
+          if(arr.lng > maxX) maxX = arr.lng;
+          if(arr.lat < minY) minY = arr.lat;
+          if(arr.lat > maxY) maxY = arr.lat;
+        }
+      }
+      extract(l.getLatLngs());
+      if(pts.length > 2) ring = pts;
+    }
+    items.push({name, center:[c.lng,c.lat], ring, minX, maxX, minY, maxY});
+  });
+
+  // Sắp xếp danh sách theo thứ tự chữ cái A-Z (hỗ trợ tiếng Việt và số tự nhiên G1, G2, G3...)
+  items.sort((a, b) => a.name.localeCompare(b.name, 'vi', { numeric: true, sensitivity: 'base' }));
+
+  const sel=[document.getElementById('startPoint'),document.getElementById('endPoint')];
+  const og=sel.map(s=>{ const o=document.createElement('optgroup'); o.label=group; s.appendChild(o); return o; });
+
+  items.forEach(item => {
+    const id=places.push(item)-1;
+    og.forEach(o=>{ const op=document.createElement('option'); op.value=id; op.textContent=item.name; o.appendChild(op); });
+  });
+}
+
+async function init(){
+  const msgs=[];
+  // --- Đường đi ---
+  try{
+    const roads=await loadJSON('NTU_DuongDi.geojson');
+    L.geoJSON(roads,{
+      style:{color:'#007bff',weight:4,opacity:.8},
+      onEachFeature:(f,l)=>{
+        const p = f.properties || {};
+        const n = getName(p, null);
+        let html = `<div style="line-height:1.4"><b style="color:#007bff">🛣️ ${n ? 'Đường: ' + n : 'Đường nội bộ NTU'}</b>`;
+        if(p.fclass) html += `<br><span style="font-size:12px;color:#555">Loại: ${p.fclass}</span>`;
+        html += `</div>`;
+        l.bindPopup(html);
+      }
+    }).addTo(campusGroup);
+    buildGraph(roads);
+    const joined=bridgeGaps(1.5);          // chỉ nối các đầu đường bị lệch đỉnh nhỏ (<= 1.5 m)
+    const jnJoined=connectNearJunctions(1.2); // nối các ngã ba bị hở đỉnh nhỏ (<= 1.2 m), tuyệt đối không tạo đường đi xuyên vỉa hè hay ngõ cụt
+    const info=keepMainComponent();
+    msgs.push(`Đường: ${nodeCoord.size} nút, ${segments.length} đoạn. Đã tự nối ${joined + jnJoined} chỗ hở nhỏ.`+(info.total>1?` Còn ${info.total-1} đoạn rời xa mạng chính (bị bỏ qua khi tìm đường).`:' Mạng đường liên thông ✔'));
+  }catch(e){ msgs.push('❌ Không đọc được NTU_DuongDi.geojson: '+e.message); }
+
+  // --- Tòa nhà ---
+  try{
+    const b=await loadJSON('NTU_ToaNha.geojson');
+    const layer=L.geoJSON(b,{
+      style:{color:'#d9534f',fillColor:'#f0ad4e',fillOpacity:.6,weight:2},
+      onEachFeature:(f,l)=>{
+        const p = f.properties || {};
+        const name = getName(p, 'Khu vực NTU');
+        let html = `<div style="min-width:140px;line-height:1.4"><b style="font-size:14px;color:#d9534f">🏢 ${name}</b>`;
+        if(p.type) html += `<br><span style="font-size:12px;color:#555">Phân loại: <b>${p.type}</b></span>`;
+        if(p.fid) html += `<br><span style="font-size:11px;color:#888">Mã (fid): #${p.fid}</span>`;
+        html += `</div>`;
+        l.bindPopup(html);
+      }
+    }).addTo(campusGroup);
+    addPlaces(layer,'Tòa nhà');
+    msgs.push(`Tòa nhà: ${layer.getLayers().length}.`);
+  }catch(e){ msgs.push('❌ Không đọc được NTU_ToaNha.geojson: '+e.message); }
+
+  // --- Tiện ích ---
+  try{
+    const t=await loadJSON('NTU_TienIch.geojson');
+    const layer=L.geoJSON(t,{
+      pointToLayer:(f,ll)=>L.circleMarker(ll,{radius:6,color:'#198754',fillColor:'#20c997',fillOpacity:.9,weight:2}),
+      style:{color:'#198754',fillColor:'#20c997',fillOpacity:.5,weight:2},
+      onEachFeature:(f,l)=>{
+        const p = f.properties || {};
+        const n = getName(p, 'Tiện ích');
+        let html = `<div style="line-height:1.4"><b style="color:#198754">📍 ${n}</b>`;
+        if(p.Loai) html += `<br><span style="font-size:12px;color:#555">Loại: <b>${p.Loai}</b></span>`;
+        if(p.fid) html += `<br><span style="font-size:11px;color:#888">Mã (fid): #${p.fid}</span>`;
+        html += `</div>`;
+        l.bindPopup(html);
+      }
+    }).addTo(campusGroup);
+    addPlaces(layer,'Tiện ích');
+    msgs.push(`Tiện ích: ${layer.getLayers().length}.`);
+  }catch(e){ msgs.push('❌ Không đọc được NTU_TienIch.geojson: '+e.message); }
+
+  if(campusGroup.getLayers().length && campusGroup.getBounds().isValid()) map.fitBounds(campusGroup.getBounds());
+  console.log(msgs.join('\n'));
+}
+
+// Tìm xem một tọa độ [lng, lat] có đang nằm trong hoặc sát một tòa nhà màu cam (<= 5m) không
+function findBuildingAt(pt){
+  if(!pt) return null;
+  for(const p of places){
+    if(p.ring && p.ring.length){
+      if(pt[0] < p.minX - 0.00015 || pt[0] > p.maxX + 0.00015 ||
+         pt[1] < p.minY - 0.00015 || pt[1] > p.maxY + 0.00015) continue;
+      if(pointInPolygon(pt, p.ring) || distToPolygon(pt, p.ring) <= 5.0){
+        return p;
+      }
+    }
+  }
+  return null;
+}
+
+/* ====================== 5. TÌM ĐƯỜNG ====================== */
+document.getElementById('btnFind').onclick=()=>{
+  const s=document.getElementById('startPoint').value, e=document.getElementById('endPoint').value;
+  $result.className='';
+  if(s===''||e===''){ alert('Vui lòng chọn đầy đủ điểm đi và điểm đến!'); return; }
+  if(s===e){ $result.textContent='Điểm đi và điểm đến trùng nhau.'; return; }
+  if(!segments.length){ $result.className='err'; $result.textContent='Chưa có dữ liệu đường đi.'; return; }
+
+  routeLayer.clearLayers();
+
+  let A = null;
+  if(s === 'user_current_location'){
+    if(!myCurrentLocation){
+      alert('Chưa có tọa độ vị trí của bạn. Vui lòng bấm nút "Định vị" trước!');
+      return;
+    }
+    const bldg = findBuildingAt(myCurrentLocation);
+    if(bldg){
+      // Đang ở trong/sát tòa nhà: bắt buộc đi theo lối vào/đường ĐÃ CHẠM vào tòa nhà đó
+      A = {
+        name: `Vị trí của bạn (tại ${bldg.name})`,
+        center: myCurrentLocation,
+        ring: bldg.ring,
+        minX: bldg.minX, maxX: bldg.maxX, minY: bldg.minY, maxY: bldg.maxY,
+        exactPt: myCurrentLocation
+      };
+    } else {
+      A = { name: 'Vị trí hiện tại của bạn', center: myCurrentLocation, ring: null, exactPt: myCurrentLocation };
+    }
+  } else {
+    A = places[+s];
+  }
+
+  let B = null;
+  if(e === 'user_current_location'){
+    if(!myCurrentLocation){
+      alert('Chưa có tọa độ vị trí của bạn. Vui lòng bấm nút "Định vị" trước!');
+      return;
+    }
+    const bldg = findBuildingAt(myCurrentLocation);
+    if(bldg){
+      B = {
+        name: `Vị trí của bạn (tại ${bldg.name})`,
+        center: myCurrentLocation,
+        ring: bldg.ring,
+        minX: bldg.minX, maxX: bldg.maxX, minY: bldg.minY, maxY: bldg.maxY,
+        exactPt: myCurrentLocation
+      };
+    } else {
+      B = { name: 'Vị trí hiện tại của bạn', center: myCurrentLocation, ring: null, exactPt: myCurrentLocation };
+    }
+  } else {
+    B = places[+e];
+  }
+
+  const r=shortestPath(A, B);
+  if(!r){ $result.className='err'; $result.textContent='Không có đường nối giữa 2 điểm (mạng đường bị đứt).'; return; }
+
+  // Tuyến đường nét liền hoàn chỉnh (không vẽ nét đứt chấm chấm xuyên tường)
+  const ll = r.path.map(c => [c[1], c[0]]);
+  const line = L.polyline(ll, { color: '#ff0000', weight: 6, opacity: .9 }).addTo(routeLayer);
+
+  // Nếu xuất phát từ vị trí người dùng trong tòa nhà, vẽ thêm nét đứt dẫn ra đúng lối vào đường đã chạm tòa nhà
+  if(A.exactPt && haversine(A.exactPt, r.path[0]) > 1.0){
+    L.polyline([[A.exactPt[1], A.exactPt[0]], [r.path[0][1], r.path[0][0]]], {
+      color: '#0d6efd',
+      weight: 3,
+      dashArray: '6, 6',
+      opacity: 0.85
+    }).addTo(routeLayer);
+  }
+  if(B.exactPt && haversine(B.exactPt, r.path[r.path.length-1]) > 1.0){
+    L.polyline([[r.path[r.path.length-1][1], r.path[r.path.length-1][0]], [B.exactPt[1], B.exactPt[0]]], {
+      color: '#0d6efd',
+      weight: 3,
+      dashArray: '6, 6',
+      opacity: 0.85
+    }).addTo(routeLayer);
+  }
+  
+  // Đặt marker xuất phát và điểm đến ngay tại lối vào / điểm đón của tòa nhà trên đường đi
+  L.marker(ll[0]).bindPopup('<b>Xuất phát:</b> ' + A.name).addTo(routeLayer);
+  L.marker(ll[ll.length - 1]).bindPopup('<b>Điểm đến:</b> ' + B.name).addTo(routeLayer).openPopup();
+  map.fitBounds(line.getBounds(), { padding: [60, 60] });
+
+  // Tính quãng đường thực tế di chuyển
+  $result.textContent = `Quãng đường ≈ ${r.length.toFixed(0)} m (~${Math.ceil(r.length / 80)} phút đi bộ)`;
+};
+document.getElementById('btnClear').onclick=()=>{ routeLayer.clearLayers(); $result.textContent=''; };
+
+// Nút thu gọn / mở rộng bảng tìm kiếm (đặc biệt tiện trên điện thoại)
+const $btnToggle = document.getElementById('btnTogglePanel');
+const $panelBody = document.getElementById('panelBody');
+$btnToggle.onclick = () => {
+  const isHidden = $panelBody.style.display === 'none';
+  $panelBody.style.display = isHidden ? 'block' : 'none';
+  $btnToggle.textContent = isHidden ? '▲ Thu gọn' : '▼ Tìm đường';
+};
+
+/* ====================== 6. ĐỊNH VỊ VỊ TRÍ HIỆN TẠI (GPS) ====================== */
+// Nút bấm định vị góc trên bên trái bản đồ
+const LocateControl = L.Control.extend({
+  options: { position: 'topleft' },
+  onAdd: function() {
+    const container = L.DomUtil.create('div', 'leaflet-bar');
+    const btn = L.DomUtil.create('a', '', container);
+    btn.innerHTML = '🎯';
+    btn.href = '#';
+    btn.title = 'Định vị vị trí hiện tại của bạn';
+    btn.style.fontSize = '16px';
+    btn.style.lineHeight = '30px';
+    btn.style.textAlign = 'center';
+    btn.style.display = 'block';
+    btn.style.width = '30px';
+    btn.style.height = '30px';
+    btn.onclick = (ev) => {
+      ev.preventDefault();
+      document.getElementById('btnLocate').click();
+    };
+    return container;
+  }
+});
+map.addControl(new LocateControl());
+
+document.getElementById('btnLocate').onclick = () => {
+  const $btn = document.getElementById('btnLocate');
+  $btn.textContent = 'Đang định vị...';
+  $btn.disabled = true;
+
+  map.locate({
+    setView: false,
+    enableHighAccuracy: true
+  });
+};
+
+// Thiết lập vị trí hiện tại của người dùng (dùng chung cho cả click chuột và GPS)
+function setUserLocation(latlng, accuracy = null, isManual = false){
+  userLocationLayer.clearLayers();
+  const lat = latlng.lat, lng = latlng.lng;
+  myCurrentLocation = [lng, lat];
+  const inCampus = campusBounds.contains(latlng);
+
+  // Vòng tròn thể hiện độ chính xác GPS hoặc bán kính chọn thủ công
+  L.circle(latlng, {
+    radius: accuracy ? Math.max(accuracy / 2, 5) : 6,
+    color: '#0d6efd',
+    fillColor: '#0d6efd',
+    fillOpacity: 0.15,
+    weight: 1
+  }).addTo(userLocationLayer);
+
+  // Chấm tròn định vị phong cách Google Maps
+  const marker = L.circleMarker(latlng, {
+    radius: 8,
+    color: '#ffffff',
+    fillColor: '#0d6efd',
+    fillOpacity: 1,
+    weight: 3
+  }).addTo(userLocationLayer);
+
+  const bldg = findBuildingAt(myCurrentLocation);
+  let popupHtml = isManual ? `<b>Vị trí bạn vừa chọn (Vị trí hiện tại)</b>` : `<b>Vị trí hiện tại của bạn</b>`;
+  if (bldg) {
+    popupHtml += `<br><b style="color:#0066cc;">Đang ở tại: ${bldg.name}</b>`;
+  }
+  if (accuracy) {
+    popupHtml += `<br><span style="font-size:12px;color:#555">Độ chính xác GPS: ±${Math.round(accuracy)}m</span>`;
+  }
+  if (!inCampus) {
+    popupHtml += `<br><span style="color:#d9534f;font-size:12px;">⚠️ Vị trí nằm ngoài khuôn viên NTU</span>`;
+  }
+  marker.bindPopup(popupHtml).openPopup();
+
+  // Tự động thêm tùy chọn vào danh sách Điểm xuất phát và chọn luôn
+  const $start = document.getElementById('startPoint');
+  let userOpt = document.getElementById('optUserLoc');
+  if (!userOpt) {
+    userOpt = document.createElement('option');
+    userOpt.id = 'optUserLoc';
+    userOpt.value = 'user_current_location';
+    $start.insertBefore(userOpt, $start.firstChild.nextSibling);
+  }
+  userOpt.textContent = bldg ? `[Vị trí của bạn - ${bldg.name}]` : '[Vị trí hiện tại của tôi]';
+  $start.value = 'user_current_location';
+
+  const $btn = document.getElementById('btnLocate');
+  if ($btn && isManual) {
+    $btn.textContent = 'Cập nhật lại vị trí';
+  }
+}
+
+// Click chuột vào bất kỳ đâu trên bản đồ hoặc tòa nhà/đường để đặt làm vị trí hiện tại
+campusGroup.on('click', (e) => {
+  if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+  setUserLocation(e.latlng, null, true);
+});
+map.on('click', (e) => {
+  setUserLocation(e.latlng, null, true);
+});
+
+map.on('locationfound', (e) => {
+  const $btn = document.getElementById('btnLocate');
+  if ($btn) {
+    $btn.textContent = 'Cập nhật lại vị trí';
+    $btn.disabled = false;
+  }
+  setUserLocation(e.latlng, e.accuracy, false);
+  if (campusBounds.contains(e.latlng)) {
+    map.setView(e.latlng, Math.max(map.getZoom(), 18));
+  }
+});
+
+map.on('locationerror', (e) => {
+  const $btn = document.getElementById('btnLocate');
+  if ($btn) {
+    $btn.textContent = 'Vị trí hiện tại của tôi';
+    $btn.disabled = false;
+  }
+  alert('Không thể lấy vị trí hiện tại: ' + e.message + '\n(Hãy đảm bảo bạn đã cấp quyền "Cho phép truy cập vị trí" trên trình duyệt).');
+});
+
+init();
+</script>
+</body>
+</html>
