@@ -449,13 +449,16 @@ function shortestPath(placeStart, placeEnd){
 const places = [];  // {name, center:[lng,lat], ring:[[lng,lat],...], minX, maxX, minY, maxY}
 const $result=document.getElementById('result');
 
-// Thư mục chứa dữ liệu geojson (cùng cấp với index.html khi deploy)
-const DATA_DIR = './duoi_Geojson/';
+// Tự động tìm thư mục dữ liệu geojson (hoạt động tốt cả khi chạy cục bộ trong Web/ lẫn khi deploy ở thư mục gốc Vercel)
 async function loadJSON(name){
-  const url = DATA_DIR + name;
-  const r=await fetch(url);
-  if(!r.ok) throw new Error(url+' -> HTTP '+r.status);
-  return r.json();
+  const candidates = ['./duoi_Geojson/' + name, '../duoi_Geojson/' + name];
+  for (const url of candidates) {
+    try {
+      const r = await fetch(url);
+      if (r.ok) return await r.json();
+    } catch(e) {}
+  }
+  throw new Error('Không đọc được dữ liệu: ' + name);
 }
 function addPlaces(layer, group){
   const items = [];
