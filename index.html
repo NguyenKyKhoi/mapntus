@@ -23,6 +23,45 @@
   #result { font-size:13px; margin-top:8px; font-weight:bold; color:#198754; line-height:1.4; }
   #result.err { color:#dc3545; }
 
+  /* Nút chuyển đổi Bản đồ / Vệ tinh nổi bật cho cả điện thoại & laptop */
+  .map-type-toggle {
+    display: flex;
+    background: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 3px 12px rgba(0,0,0,0.3);
+    overflow: hidden;
+    border: 1px solid #bbb;
+    margin-bottom: 22px !important;
+    margin-left: 15px !important;
+    z-index: 999;
+  }
+  .map-type-toggle .type-btn {
+    background: #ffffff;
+    color: #333;
+    border: none;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: bold;
+    cursor: pointer;
+    margin: 0;
+    border-radius: 0;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .map-type-toggle .type-btn.active {
+    background: #0066cc;
+    color: #ffffff;
+  }
+  .map-type-toggle .type-btn:first-child {
+    border-right: 1px solid #ddd;
+  }
+  .map-type-toggle .type-btn:hover:not(.active) {
+    background: #f0f2f5;
+  }
+
   /* Giao diện tinh gọn trên màn hình điện thoại (<= 600px) */
   @media (max-width: 600px) {
     .panel {
@@ -41,6 +80,14 @@
     button { margin-top: 4px; }
     #btnLocate { font-size: 11px !important; padding: 4px !important; margin-top: 3px !important; }
     #result { font-size: 12px; margin-top: 5px; }
+    .map-type-toggle {
+      margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 26px) !important;
+      margin-left: 10px !important;
+    }
+    .map-type-toggle .type-btn {
+      padding: 6px 11px;
+      font-size: 12px;
+    }
   }
 </style>
 </head>
@@ -103,10 +150,37 @@ const googleHybrid = L.tileLayer('https://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z
   attribution: 'NTU WebGIS Team'
 });
 
-L.control.layers({
-  "Google Bản đồ": googleStreets,
-  "Google Vệ tinh": googleHybrid
-}, null, { position: 'bottomleft' }).addTo(map);
+// Nút chuyển đổi nhanh Bản đồ / Vệ tinh (hiển thị rõ ràng, dễ bấm trên cả điện thoại & máy tính)
+const MapTypeControl = L.Control.extend({
+  options: { position: 'bottomleft' },
+  onAdd: function() {
+    const div = L.DomUtil.create('div', 'map-type-toggle');
+    div.innerHTML = `
+      <button type="button" id="btnTypeStreets" class="type-btn active" title="Bản đồ đường phố">🗺️ Bản đồ</button>
+      <button type="button" id="btnTypeHybrid" class="type-btn" title="Ảnh vệ tinh">🛰️ Vệ tinh</button>
+    `;
+    L.DomEvent.disableClickPropagation(div);
+    return div;
+  }
+});
+map.addControl(new MapTypeControl());
+
+document.getElementById('btnTypeStreets').onclick = () => {
+  if (!map.hasLayer(googleStreets)) {
+    map.removeLayer(googleHybrid);
+    map.addLayer(googleStreets);
+    document.getElementById('btnTypeStreets').classList.add('active');
+    document.getElementById('btnTypeHybrid').classList.remove('active');
+  }
+};
+document.getElementById('btnTypeHybrid').onclick = () => {
+  if (!map.hasLayer(googleHybrid)) {
+    map.removeLayer(googleStreets);
+    map.addLayer(googleHybrid);
+    document.getElementById('btnTypeHybrid').classList.add('active');
+    document.getElementById('btnTypeStreets').classList.remove('active');
+  }
+};
 
 // Tạo pane riêng cho mặt nạ đen, nằm ngay trên bản đồ nền (zIndex 250) nhưng dưới các đối tượng NTU
 map.createPane('maskPane');
